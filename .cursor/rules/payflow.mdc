@@ -1,0 +1,151 @@
+# PayFlow — Cursor Rules
+
+## Project Context
+
+You are building PayFlow, a payment processing backend. It is a Java/Spring Boot monorepo with four services: payflow-api, payflow-transactions, payflow-ledger, payflow-notifications, and a shared payflow-common module. The full spec is in PRD.md. Read it before writing any code.
+
+---
+
+## Non-Negotiable Rules
+
+- Never write code outside of the established module structure. Every class belongs in exactly one service.
+- Never use field injection (`@Autowired` on fields). Always use constructor injection.
+- Never use `var` for ambiguous types. Be explicit with generics.
+- Never swallow exceptions silently. Every catch block must either rethrow, log, or handle deliberately.
+- Never hardcode configuration values. All secrets, URLs, ports, and credentials go in `application.yml` as `${ENV_VAR:default}` references.
+- Never write a Kafka consumer without a configured `DefaultErrorHandler` and dead letter topic.
+- Never write a DB migration after the fact. Schema changes always come first as a new Flyway file.
+
+---
+
+## Code Style
+
+- Java 17. Use records for immutable DTOs. Use sealed classes where appropriate for event types.
+- Package structure per service: `com.payflow.{service}.{layer}` where layer is one of: `api`, `service`, `domain`, `repository`, `kafka`, `config`
+- Class names are PascalCase. Methods and variables are camelCase. Constants are SCREAMING_SNAKE_CASE.
+- No abbreviations in names. `paymentId` not `pmtId`. `idempotencyKey` not `iKey`.
+- Every public method gets a single-line Javadoc if its purpose isn't immediately obvious from the name.
+- Max method length: 40 lines. If it's longer, extract a private method.
+- Max class length: 300 lines. If it's longer, split responsibilities.
+
+---
+
+## Spring Boot Conventions
+
+- Controllers are `@RestController` only. No `@Controller` with view resolution.
+- All controllers are under `/api/v1/` prefix. Apply this at the class level with `@RequestMapping`.
+- Use `ResponseEntity<T>` as the return type for all controller methods so HTTP status is explicit.
+- Services are annotated `@Service`. They contain business logic only, no HTTP or Kafka concerns.
+- Repositories are `@Repository` and extend `JpaRepository<T, UUID>` or use `JdbcTemplate` for complex queries.
+- Use `@Transactional` at the service layer, not the repository or controller layer.
+- Configuration classes are annotated `@Configuration`. One configuration class per concern (KafkaConfig, RedisConfig, SecurityConfig, etc.).
+
+---
+
+## Kafka Rules
+
+- All Kafka event classes live in `payflow-common` under `com.payflow.common.events`.
+- Every event has: `eventId` (UUID), `eventType` (String), `occurredAt` (Instant), and the relevant payload fields.
+- Producer methods are `void` and async. Do not block on `ListenableFuture` or `CompletableFuture` in the hot path.
+- Consumer methods are annotated `@KafkaListener(topics = "...", groupId = "${spring.application.name}")`.
+- Consumer classes are annotated `@Component` and named `{Domain}EventConsumer` (e.g. `PaymentEventConsumer`).
+- Always configure `spring.kafka.consumer.auto-offset-reset=earliest` in application.yml.
+- Dead letter topics follow the pattern `{original-topic}.dlt`.
+- Error handler config goes in a `@Bean` method in `KafkaConfig`:
+  ```java
+  @Bean
+  public DefaultErrorHandler errorHandler(KafkaOperations<?, ?> template) {
+      DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(template);
+      FixedBackOff backOff = new FixedBackOff(3000L, 3);
+      return new DefaultErrorHandler(recoverer, backOff);
+  }
+  ```
+
+---
+
+## Redis / Idempotency Rules
+
+- Redis operations are always wrapped in a try-catch. A Redis failure must never block a payment from being processed (fail open, log the error).
+- Idempotency key format: `idempotency:{key}` where `{key}` is the raw client-provided UUID.
+- TTL for idempotency keys: 86400 seconds (24 hours).
+- Use `StringRedisTemplate` for simple key-value ops. Use `RedisTemplate<String, Object>` only when storing complex objects.
+- Cache the full response body (serialized as JSON string) so duplicate requests get byte-for-byte identical responses.
+
+---
+
+## Database / Flyway Rules
+
+- Every schema change is a new Flyway migration file. Never modify an existing migration.
+- Migration file naming: `V{version}__{description}.sql` where version is a sequential integer (V1, V2, V3...).
+- All migration files go in `src/main/resources/db/migration/`.
+- Each service manages its own schema. Do not write migrations that touch another service's tables.
+- Always include `IF NOT EXISTS` in `CREATE TABLE` statements inside migrations.
+- Use `UUID` as the primary key type for all entities. Use `gen_random_uuid()` as the default.
+- Use `TIMESTAMPTZ` (timestamp with time zone) for all timestamp columns, never `TIMESTAMP`.
+- Add indexes on foreign keys and any column used in a `WHERE` clause in service queries.
+
+---
+
+## Error Handling
+
+- Global exception handler is a `@ControllerAdvice` class named `GlobalExceptionHandler` in `payflow-api`.
+- All error responses follow this exact shape:
+  ```json
+  {
+    "error": "ERROR_CODE",
+    "message": "human readable message",
+    "timestamp": "ISO-8601",
+    "path": "/api/v1/..."
+  }
+  ```
+- Define a custom exception hierarchy: `PayflowException` (base) with subclasses `ValidationException`, `DuplicatePaymentException`, `PaymentNotFoundException`.
+- HTTP status mapping: `ValidationException` → 400, `DuplicatePaymentException` → 409, `PaymentNotFoundException` → 404, all others → 500.
+- Never expose stack traces in API responses. Log them at ERROR level with a correlation ID.
+
+---
+
+## Docker Rules
+
+- Each service has its own `Dockerfile` in its module root.
+- Use multi-stage builds. Build stage uses `maven:3.9-eclipse-temurin-17` and runtime stage uses `eclipse-temurin:17-jre-alpine`.
+- The JAR is copied from `/target/*.jar` in the build stage to `/app/app.jar` in the runtime stage.
+- Expose port 8080 in all Dockerfiles.
+- `CMD ["java", "-jar", "/app/app.jar"]` is the entrypoint. No shell scripts.
+- `docker-compose.yml` in the root brings up: zookeeper, kafka, postgres, redis. Services are separate and started manually or via `docker-compose.override.yml`.
+- Always define `healthcheck` blocks for kafka and postgres in docker-compose so services wait for them properly.
+
+---
+
+## Testing Rules
+
+- Use Testcontainers for integration tests that need Postgres, Redis, or Kafka. Never mock the DB in integration tests.
+- Unit tests use JUnit 5 + Mockito. No PowerMock.
+- Test class naming: `{ClassUnderTest}Test` for unit tests, `{ClassUnderTest}IT` for integration tests.
+- Every service method that contains business logic gets at least one unit test covering the happy path and one covering the primary failure path.
+- Do not write tests for getters/setters or Spring Boot auto-configuration.
+
+---
+
+## What to Build First (Suggested Order)
+
+1. `payflow-common`: event classes, shared DTOs, constants
+2. `docker-compose.yml`: kafka, zookeeper, postgres, redis
+3. `payflow-api`: POST /payments endpoint, idempotency check, Kafka publish
+4. `payflow-transactions`: consume payment.initiated, state machine, publish completed/failed
+5. `payflow-ledger`: consume payment.completed, write double-entry
+6. `payflow-notifications`: consume completed/failed, log/stub webhook
+7. Dockerfiles for all four services
+8. ECS task definition JSONs
+
+---
+
+## Things to Never Do
+
+- Do not use Spring Data REST (`@RepositoryRestResource`). Expose endpoints manually through controllers.
+- Do not use Lombok. Java records and explicit constructors only.
+- Do not use `@Scheduled` polling as a substitute for Kafka consumers.
+- Do not put business logic in Kafka listener methods. Delegate to a service class immediately.
+- Do not use `Thread.sleep()` anywhere in production code.
+- Do not commit `.env` files or any file containing real credentials.
+- Do not use `spring.jpa.hibernate.ddl-auto=create` or `update` in any environment. Flyway manages schema exclusively.
+
