@@ -1,4 +1,0 @@
--------------------------------------------------------------------------------
-Test set: com.payflow.api.service.PaymentServiceTest
--------------------------------------------------------------------------------
-Tests run: 11, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.899 s -- in com.payflow.api.service.PaymentServiceTest
