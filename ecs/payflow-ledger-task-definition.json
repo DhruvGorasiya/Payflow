@@ -1,0 +1,51 @@
+{
+  "family": "payflow-ledger",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "payflow-ledger",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/payflow-ledger:latest",
+      "environment": [
+        {
+          "name": "SPRING_KAFKA_BOOTSTRAP_SERVERS",
+          "value": "KAFKA_BROKER_HOST:9092"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "SPRING_DATASOURCE_URL",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:payflow/db-url"
+        },
+        {
+          "name": "SPRING_DATASOURCE_USERNAME",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:payflow/db-username"
+        },
+        {
+          "name": "SPRING_DATASOURCE_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:payflow/db-password"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/payflow-ledger",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "pgrep java || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "essential": true
+    }
+  ]
+}
