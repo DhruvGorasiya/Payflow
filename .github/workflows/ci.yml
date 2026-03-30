@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: "maven"
+
+      - name: Compile
+        run: mvn compile -q
+
+      - name: Unit tests
+        run: mvn test
+
+      - name: Integration tests (requires Docker)
+        run: mvn verify -Dsurefire.skip=true
+
+      - name: Upload unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: "**/target/surefire-reports/*.xml"
+          retention-days: 7
+
+      - name: Upload integration test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-reports
+          path: "**/target/failsafe-reports/*.xml"
+          retention-days: 7

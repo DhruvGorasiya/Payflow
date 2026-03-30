@@ -1,0 +1,63 @@
+name: CD — Build & Push to ECR
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+
+jobs:
+  build-and-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        service: [payflow-api, payflow-transactions, payflow-ledger, payflow-notifications]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: "maven"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: tag
+        run: echo "IMAGE_TAG=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.service }}
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
+        run: |
+          docker build \
+            -f ${{ matrix.service }}/Dockerfile \
+            -t $ECR_REGISTRY/${{ matrix.service }}:$IMAGE_TAG \
+            -t $ECR_REGISTRY/${{ matrix.service }}:latest \
+            .
+          docker push $ECR_REGISTRY/${{ matrix.service }}:$IMAGE_TAG
+          docker push $ECR_REGISTRY/${{ matrix.service }}:latest
+
+      - name: Summary
+        run: |
+          echo "### Docker image pushed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service:** ${{ matrix.service }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag:** ${{ steps.tag.outputs.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry:** $ECR_REGISTRY" >> $GITHUB_STEP_SUMMARY
