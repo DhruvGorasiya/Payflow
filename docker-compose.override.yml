@@ -1,0 +1,84 @@
+version: "3.8"
+
+# Brings up all four PayFlow application services on top of docker-compose.yml.
+# Usage: docker-compose up  (Docker Compose automatically merges this file)
+
+services:
+  payflow-api:
+    build:
+      context: .
+      dockerfile: payflow-api/Dockerfile
+    container_name: payflow-api
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payflow
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/api/v1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  payflow-transactions:
+    build:
+      context: .
+      dockerfile: payflow-transactions/Dockerfile
+    container_name: payflow-transactions
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payflow
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      payflow-api:
+        condition: service_healthy
+
+  payflow-ledger:
+    build:
+      context: .
+      dockerfile: payflow-ledger/Dockerfile
+    container_name: payflow-ledger
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payflow
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      payflow-api:
+        condition: service_healthy
+
+  payflow-notifications:
+    build:
+      context: .
+      dockerfile: payflow-notifications/Dockerfile
+    container_name: payflow-notifications
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

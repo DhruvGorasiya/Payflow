@@ -16,10 +16,11 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Currency;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -28,7 +29,8 @@ public class PaymentService {
     private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
     private static final String IDEMPOTENCY_KEY_PREFIX = "idempotency:";
     private static final long IDEMPOTENCY_TTL_SECONDS = 86_400L;
-    private static final Set<String> SUPPORTED_CURRENCIES = Set.of("USD", "EUR", "GBP", "SGD", "INR");
+    private static final BigDecimal MIN_AMOUNT = new BigDecimal("0.01");
+    private static final BigDecimal MAX_AMOUNT = new BigDecimal("1000000.00");
 
     private final PaymentRepository paymentRepository;
     private final PaymentEventProducer paymentEventProducer;
@@ -102,14 +104,18 @@ public class PaymentService {
         if (request.receiverId() == null || request.receiverId().isBlank()) {
             throw new ValidationException("receiverId must not be blank");
         }
-        if (request.amount() == null || request.amount().signum() <= 0) {
-            throw new ValidationException("amount must be greater than 0");
+        if (request.amount() == null
+                || request.amount().compareTo(MIN_AMOUNT) < 0
+                || request.amount().compareTo(MAX_AMOUNT) > 0) {
+            throw new ValidationException("amount must be between 0.01 and 1000000.00");
         }
         if (request.currency() == null || request.currency().isBlank()) {
             throw new ValidationException("currency must not be blank");
         }
-        if (!SUPPORTED_CURRENCIES.contains(request.currency().toUpperCase())) {
-            throw new ValidationException("unsupported currency: " + request.currency());
+        try {
+            Currency.getInstance(request.currency().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new ValidationException("invalid ISO 4217 currency code: " + request.currency());
         }
     }
 

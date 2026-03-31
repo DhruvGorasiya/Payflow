@@ -5,6 +5,7 @@ import com.payflow.api.service.PaymentService.PaymentInitiationResult;
 import com.payflow.common.dto.PaymentRequest;
 import com.payflow.common.dto.PaymentResponse;
 import com.payflow.common.dto.PaymentStatusResponse;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -25,7 +26,7 @@ public class PaymentController {
     @PostMapping("/payments")
     public ResponseEntity<PaymentResponse> initiatePayment(
             @RequestHeader("Idempotency-Key") String idempotencyKey,
-            @RequestBody PaymentRequest request) {
+            @Valid @RequestBody PaymentRequest request) {
         PaymentInitiationResult result = paymentService.initiatePayment(idempotencyKey, request);
         HttpStatus status = result.created() ? HttpStatus.ACCEPTED : HttpStatus.OK;
         return ResponseEntity.status(status).body(result.response());
