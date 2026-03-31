@@ -30,6 +30,7 @@
         <flyway.version>10.12.0</flyway.version>
         <postgresql.version>42.7.3</postgresql.version>
         <testcontainers.version>1.19.8</testcontainers.version>
+        <logstash-logback-encoder.version>7.4</logstash-logback-encoder.version>
     </properties>
 
     <dependencyManagement>
@@ -85,6 +86,13 @@
                 <groupId>com.payflow</groupId>
                 <artifactId>payflow-common</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <!-- Logstash Logback Encoder -->
+            <dependency>
+                <groupId>net.logstash.logback</groupId>
+                <artifactId>logstash-logback-encoder</artifactId>
+                <version>${logstash-logback-encoder.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
