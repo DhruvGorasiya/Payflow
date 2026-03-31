@@ -1,8 +1,8 @@
 # PayFlow — Implementation Progress & Next Steps
 
-## Status: Phase 4 Complete
+## Status: Phase 5 Complete
 
-All four microservices are implemented, tested, Dockerized, and wired into CI/CD pipelines.
+All four microservices are implemented, tested, Dockerized, wired into CI/CD pipelines, and hardened with input validation.
 
 ---
 
@@ -24,7 +24,7 @@ Shared library JAR with no Spring Boot dependency.
 | `events/PaymentInitiatedEvent.java` | Kafka event record — sent when API accepts a payment |
 | `events/PaymentCompletedEvent.java` | Kafka event record — sent when transaction processing succeeds |
 | `events/PaymentFailedEvent.java` | Kafka event record — sent when transaction processing fails |
-| `dto/PaymentRequest.java` | Incoming REST request record |
+| `dto/PaymentRequest.java` | Incoming REST request record with Bean Validation annotations |
 | `dto/PaymentResponse.java` | Outgoing REST response record |
 | `dto/PaymentStatusResponse.java` | GET /payments/{id} response record |
 | `dto/ErrorResponse.java` | Uniform error envelope record |
@@ -32,6 +32,8 @@ Shared library JAR with no Spring Boot dependency.
 | `exception/ValidationException.java` | → HTTP 400 |
 | `exception/PaymentNotFoundException.java` | → HTTP 404 |
 | `exception/PaymentProcessingException.java` | → HTTP 422 |
+| `validation/ValidCurrency.java` | Custom constraint annotation for ISO 4217 currency codes |
+| `validation/CurrencyValidator.java` | `ConstraintValidator` using `java.util.Currency.getInstance()` |
 
 #### `payflow-api` (port 8080)
 REST gateway with idempotency and Kafka publishing.
@@ -40,10 +42,10 @@ REST gateway with idempotency and Kafka publishing.
 |---|---|
 | `domain/Payment.java` | JPA entity for `payments` table |
 | `repository/PaymentRepository.java` | `findByIdempotencyKey` query method |
-| `service/PaymentService.java` | Redis check → DB check → create → Kafka → cache |
+| `service/PaymentService.java` | Redis check → DB check → create → Kafka → cache; ISO 4217 + range validation |
 | `kafka/PaymentEventProducer.java` | Async `KafkaTemplate.send()` with completion logging |
-| `api/PaymentController.java` | `POST /api/v1/payments`, `GET /api/v1/payments/{id}`, `GET /api/v1/health` |
-| `api/GlobalExceptionHandler.java` | `@RestControllerAdvice` → uniform JSON error envelope |
+| `api/PaymentController.java` | `POST /api/v1/payments` (`@Valid`), `GET /api/v1/payments/{id}`, `GET /api/v1/health` |
+| `api/GlobalExceptionHandler.java` | `@RestControllerAdvice` — handles `MethodArgumentNotValidException` → 400, uniform JSON envelope |
 | `config/KafkaConfig.java` | Producer factory, `DefaultErrorHandler` with DLQ |
 | `resources/application.yml` | All configuration via env var references |
 | `resources/db/migration/V1__create_payments_table.sql` | Creates `payments` table with indexes |
@@ -103,14 +105,27 @@ Outbound notification stub — consumes `payment.completed` and `payment.failed`
 ### Phase 4 — Integration Tests, CI/CD & ECS
 
 - **Integration tests** (run with `mvn verify`, require Docker):
-  - `PaymentControllerIT` — Full HTTP round-trip via `TestRestTemplate`. Testcontainers PostgreSQL + Redis. `@EmbeddedKafka`. Tests: create payment, duplicate idempotency key → 200, get payment status, get non-existent → 404.
+  - `PaymentControllerIT` — Full HTTP round-trip via `TestRestTemplate`. Testcontainers PostgreSQL + Redis. `@EmbeddedKafka`. Tests: create payment, duplicate idempotency key → 200, get payment status, get non-existent → 404, missing header → 400, invalid amount → 400.
   - `LedgerServiceIT` — Verifies double-entry write and idempotent re-delivery skip. Testcontainers PostgreSQL + `@EmbeddedKafka`.
-  - `PaymentTransactionServiceIT` — Publishes `payment.initiated` to embedded Kafka; spy consumers verify `payment.completed` or `payment.failed` emitted. Seeds data via `JdbcTemplate`. Flyway enabled via `@TestPropertySource` with test-scope migration at `src/test/resources/db/migration/V1__create_payments_table.sql`.
+  - `PaymentTransactionServiceIT` — Publishes `payment.initiated` to embedded Kafka; spy consumers verify `payment.completed` or `payment.failed` emitted. Seeds data via `JdbcTemplate`. Flyway enabled via `@TestPropertySource`.
 - **GitHub Actions CI** (`.github/workflows/ci.yml`): Every push/PR to `main` → compile → unit tests → integration tests.
 - **GitHub Actions CD** (`.github/workflows/cd.yml`): Push to `main` → matrix Docker build for all 4 services → push to Amazon ECR with `{short-sha}` and `latest` tags.
 - **ECS task definitions** (`ecs/*.json`): Fargate, 512 CPU / 1024 MB. API has ALB + HTTP healthcheck. Other three services are internal. Secrets from AWS Secrets Manager.
 - **`README.md`**: Architecture diagram, quick start, curl examples, test commands, environment variable reference, CI/CD table, idempotency design, AWS deployment notes.
 - **`.gitignore`**: Excludes `target/`, `*.jar`, `.env`, IDE metadata.
+
+### Phase 5 — Validation & Hardening
+
+- **Bean Validation on `PaymentRequest`** (`payflow-common`):
+  - `senderId` / `receiverId`: `@NotBlank @Size(max = 64)`
+  - `amount`: `@NotNull @DecimalMin("0.01") @DecimalMax("1000000.00")`
+  - `currency`: `@NotBlank @ValidCurrency`
+  - Added `jakarta.validation-api` dependency to `payflow-common/pom.xml`
+- **`@ValidCurrency` constraint** (`payflow-common/validation/`): Custom annotation + `CurrencyValidator` using `java.util.Currency.getInstance()` — validates against the full ISO 4217 registry. Replaces the old hardcoded 5-currency set.
+- **Controller wiring** (`payflow-api`): `@Valid` added to `@RequestBody` in `PaymentController`. `spring-boot-starter-validation` added to `payflow-api/pom.xml`.
+- **`GlobalExceptionHandler`** updated: handles `MethodArgumentNotValidException` → HTTP 400 with first field error message in the standard error envelope.
+- **`PaymentService.validateRequest()`** updated: uses ISO 4217 check via `Currency.getInstance()` and enforces 0.01–1,000,000.00 range as a service-level defense-in-depth layer.
+- **`NotificationServiceIT`** (`payflow-notifications`): Integration test using `@EmbeddedKafka` + Testcontainers Redis (`redis:7-alpine`). Publishes `PaymentCompletedEvent` and `PaymentFailedEvent`, then asserts Redis keys (`notification:{id}`) written correctly. Uses Awaitility with 10s timeout for async assertion. Requires Docker to run.
 
 ---
 
@@ -120,10 +135,9 @@ Outbound notification stub — consumes `payment.completed` and `payment.failed`
 |---|---|---|
 | 1 | `PaymentTransactionService` | `simulateProcessing()` only validates non-null amount. No real payment processing logic. |
 | 2 | `NotificationService` | Webhook delivery is a stub (logs only). No real HTTP webhook calls. |
-| 3 | Integration tests | Not verified at runtime — Docker was not available locally during development. Tests compile cleanly; runtime validation pending. |
-| 4 | `payflow-notifications` | No integration test written yet (see Next Steps). |
-| 5 | Security | No authentication/authorization on any endpoint. |
-| 6 | Observability | No distributed tracing (no Micrometer/OTEL setup). |
+| 3 | Integration tests | Not verified at runtime — Docker not available locally. Tests compile cleanly; runtime validation pending. |
+| 4 | Security | No authentication/authorization on any endpoint. |
+| 5 | Observability | No distributed tracing, no structured JSON logs, no metrics endpoint. |
 
 ---
 
@@ -134,27 +148,28 @@ Outbound notification stub — consumes `payment.completed` and `payment.failed`
 | `main` | Stable base — `payflow-common`, root POM, `.gitignore` |
 | `phase3` | All four services + Dockerfiles + docker-compose.override.yml + unit tests |
 | `phase4` | Integration tests + CI/CD workflows + ECS task definitions + README |
+| `phase4` (current) | + Phase 5: Bean Validation, `@ValidCurrency`, `NotificationServiceIT` |
 
 ---
 
 ## Next Steps
 
-### Immediate (Phase 5 — Validation & Hardening)
+### In Progress (Phase 6 — Observability & Security)
 
-- [ ] **`NotificationServiceIT`** — Write integration test for `payflow-notifications`. Verify `payment.completed` and `payment.failed` listeners trigger notification logic. Use `@EmbeddedKafka` + spy on `NotificationService` or check Redis key written.
-- [ ] **Run all tests with Docker available** — Execute `mvn verify` end-to-end to confirm Testcontainers-based IT tests pass at runtime.
-- [ ] **Input validation** — Add `@Valid` + Bean Validation (`@NotNull`, `@DecimalMin`, `@Size`) to `PaymentRequest`. Return HTTP 400 on violation via `GlobalExceptionHandler`.
-- [ ] **Currency validation** — Validate `currency` is a valid ISO 4217 code (e.g. reject `"XYZ"`).
-- [ ] **Amount range** — Enforce minimum (`0.01`) and maximum (`1,000,000.00`) amounts.
+#### Observability Bundle (Items 1–3 are tightly related)
 
-### Near-term (Phase 6 — Observability & Security)
+- [ ] **Actuator + Micrometer** — Add `spring-boot-starter-actuator` to all 4 services. Expose `/actuator/health`, `/actuator/metrics`, `/actuator/prometheus` (Prometheus-format scrape endpoint via `micrometer-registry-prometheus`).
+- [ ] **Structured logging** — Add `logstash-logback-encoder` to all services. Emit JSON log lines. Include `traceId`, `paymentId`, `service` MDC fields in every log line.
+- [ ] **Correlation ID** — `X-Correlation-ID` request header. Generate UUID in `payflow-api` if absent; propagate as MDC field and Kafka message header through all downstream services.
 
-- [ ] **Actuator + Micrometer** — Add `spring-boot-starter-actuator` to all services. Expose `/actuator/health`, `/actuator/metrics`, `/actuator/prometheus`.
-- [ ] **Distributed tracing** — Add `micrometer-tracing-bridge-otel` + OTLP exporter. Propagate `traceId` across Kafka messages via headers.
-- [ ] **Structured logging** — Add `logstash-logback-encoder` to emit JSON logs. Include `traceId`, `paymentId`, `service` in every log line.
-- [ ] **API authentication** — Add Spring Security with JWT validation on `POST /api/v1/payments`. Public endpoint: `GET /api/v1/health`.
-- [ ] **Rate limiting** — Add Redis-backed rate limiting per sender (`senderId`) to prevent abuse.
-- [ ] **Correlation ID** — Generate and propagate `X-Correlation-ID` header through all services for end-to-end tracing.
+#### Security
+
+- [ ] **API authentication** — Add `spring-boot-starter-security` + `spring-security-oauth2-resource-server` to `payflow-api`. Validate JWT bearer tokens on `POST /api/v1/payments` and `GET /api/v1/payments/{id}`. Keep `GET /api/v1/health` public.
+- [ ] **Rate limiting** — Redis-backed sliding window per `senderId`. Reject with HTTP 429 when threshold exceeded (e.g. 100 req/min). Fail-open on Redis error.
+
+#### Distributed Tracing
+
+- [ ] **Micrometer OTEL bridge** — Add `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp` to all services. Auto-instrument Spring MVC and Kafka listeners. Propagate `traceId`/`spanId` across Kafka message headers.
 
 ### Future (Phase 7 — Production Readiness)
 
